@@ -2,6 +2,7 @@ from torch import nn
 import torch
 from datetime import datetime
 from torch.autograd import Variable
+from tqdm import tqdm
 
 def sampler(top_k:int, logits: torch.Tensor, top_p=0.0, filter_value=-float('Inf')):
     """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
@@ -133,6 +134,8 @@ class RNNModel(nn.Module):
                 # print(labels[0])
                 hidden = tuple([each.data for each in hidden])
                 logits, hidden = self.forward(inputs, hidden)
+                logits = torch.sum(logits, dim=1)
+                print(logits.shape, labels.shape)
                 loss = loss_fn(logits.view(-1, self.output_size), labels.view(-1))
                 #print("loss backward")
                 loss.backward()
@@ -204,13 +207,13 @@ class LSTM(nn.Module):
         self.name=name
 
     def init_hidden(self, bsize):
-        return (torch.zeros(self.n_layers, bsize, self.hidden_size),
-                torch.zeros(self.n_layers, bsize, self.hidden_size))
+        return (torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device),
+                torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device))
 
     def prompt(self, text: str, max_length=50):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
-        input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0)
+        input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
         hidden = self.init_hidden(1)
         output = []
 
@@ -224,10 +227,7 @@ class LSTM(nn.Module):
                 next_token_id = sampler(20, logits, top_p=0.8)
                 output.append(next_token_id.item())
 
-                print(f"Input Tensor: {input_tensor}")
-                print(f"Logits Shape: {logits.shape}")
-                print(f"Next Token: {next_token_id}")
-                input_tensor = torch.tensor([[next_token_id]], dtype=torch.long)
+                input_tensor = torch.tensor([[next_token_id]], dtype=torch.long).to(self.device)
 
                 
         return self.tokenizer.decode(output, out_type=str)
@@ -251,28 +251,33 @@ class LSTM(nn.Module):
 
         training_loss, val_loss = [], []
         hidden = self.init_hidden(self.batch_size)
-        for epoch in range(epochs):
+        for epoch in tqdm(range(epochs)):
             # Make sure gradient tracking is on, and do a pass over the data
             self.train()
             running_loss = 0.
             for inputs, labels in training_loader:
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
                 # Zero your gradients for every batch!
                 optimizer.zero_grad()
                 # print(labels[0])
                 hidden = tuple([each.data for each in hidden])
                 logits, hidden = self.forward(inputs, hidden)
-                #print(logits, logits.shape, labels, labels.shape)
-                loss = loss_fn(logits.view(-1, self.output_size), labels.reshape(-1))
+                # logits shape should be (batch_size, seqlen, vocabsize)
+                # labels should be (batch_size, expected_token_id)
+                #print(logits.shape)
+                #print(labels.shape)
+                loss = loss_fn(logits.view(-1, self.output_size), labels.view(-1))
                 #print("loss backward")
                 loss.backward()
                 #print("optimizer")
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 3)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 5)
                 # Adjust learning weights
                 optimizer.step()
 
                 # Gather data and report
                 running_loss += loss.item()
-                print(f"EPOCH {epoch+1} Loss: {loss.item()}")
+                #print(f"EPOCH {epoch+1} Loss: {loss.item()}")
 
             avg_train_loss = running_loss / len(training_loader)
             training_loss.append(avg_train_loss)
@@ -286,13 +291,14 @@ class LSTM(nn.Module):
             # Disable gradient computation and reduce memory consumption.
             with torch.no_grad():
                 for vinputs, vlabels  in train_kit['val_loader']: 
+                    vinputs, vlabels = vinputs.to(self.device), vlabels.to(self.device)
                     vhidden = tuple([each.data for each in vhidden])
                     voutputs, _ = self.forward(vinputs, vhidden)
                     vloss = loss_fn(voutputs.view(-1, self.output_size), vlabels.view(-1))
                     running_vloss += vloss
             avg_vloss = running_vloss / len(train_kit['val_loader'])
             val_loss.append(avg_vloss)
-            print('numbers = (avg loss {} avgval {} bestval)'.format(avg_train_loss, avg_vloss, best_vloss))
+            print('numbers = (avg loss {} avgval {} bestval {})'.format(avg_train_loss, avg_vloss, best_vloss))
 
             # Track best performance, and save the model's state
             if avg_vloss < best_vloss:
@@ -304,8 +310,9 @@ class LSTM(nn.Module):
                 patience_counter+=1
 
             if patience_counter >= patience:
-                print('not patience anymore. stopping')
+                print('not patience anymore. early stopping')
                 model_path = 'model_{}_{}.torch'.format(timestamp, self.name)
+                print('saving to', model_path)
                 torch.save(self.state_dict(), model_path)
                 break
 

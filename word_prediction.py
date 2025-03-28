@@ -1,15 +1,9 @@
-import io
 #npx degit jghawaly/CSC7809_FoundationModels/Project2/data/raw raw/                             
-import os, glob
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple
-import numpy as np
 import torch
 import numpy as np
-from functools import reduce
 import sentencepiece as spm
-from torch.autograd import Variable
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW, lr_scheduler
 from torcheval.metrics.metric import Metric
@@ -72,7 +66,7 @@ def training_kit(params, lr, weight_decay, dataloader, valloader, batch_size, ep
         # ignore padding.
         'loss': CrossEntropyLoss(ignore_index=3),
         'opt': opt,
-        'scheduler': lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=1, factor=0.5),
+        'scheduler': lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=3, factor=0.5),
         'epochs' : epochs,
         'batch_size': batch_size,
         'train_loader': dataloader,
@@ -97,11 +91,11 @@ if __name__ == '__main__':
     sp = spm.SentencePieceProcessor(model_file=tokenizer_location)
 
     # Some arbitrary parameters for the example
-    hidden_size = 52  # Number of hidden units
+    hidden_size = 512  # Number of hidden units
     output_size = sp.GetPieceSize() # Output dimension
     seq_len = 50  # Length of the input sequence
     batch_size = 128  # Number of sequences in a batch
-    embed_dim = 512
+    embed_dim = 10
      
     training_loader = DataLoader(
         TokenizedDataset(training_data, sp, seq_len),
@@ -125,64 +119,94 @@ if __name__ == '__main__':
         batch_size=batch_size,
         collate_fn=collation
     )
-    device = 'cpu'
-    rnnmodel = RNNModel(embed_dim=embed_dim,
-                        hidden_size=hidden_size,
-                        output_size=output_size,
-                        batch_size=batch_size,
-                        n_layers=4,
-                        device=device,
-                        tokenizer=sp,
-                        name="rnn")
+    if torch.cuda.is_available():
+        print('torch cuda is_available')
+        device = torch.device('cuda')          # Use GPU
+    else:
+        print('torch cuda not is_available')
+        device = torch.device('cpu')           # Use CPU
+#    device = torch.device('cpu')
 
-    lstmmodel = LSTM(embed_dim=embed_dim,
+    import argparse
+    parser = argparse.ArgumentParser(description="CLI for word prediction model.")
+    parser.add_argument("model", choices=["rnn", "transformer", "lstm"], help="Model type to use.")
+    parser.add_argument("mode", choices=["train", "test"], help="Operation mode.")
+    parser.add_argument("--state", type=str)
+    
+    args = parser.parse_args()
+    
+    print(f"Selected model: {args.model}")
+    print(f"Mode: {args.mode}")
+    if args.model == 'rnn':
+        model = RNNModel(embed_dim=embed_dim,
+                            hidden_size=hidden_size,
+                            output_size=output_size,
+                            batch_size=batch_size,
+                            n_layers=4,
+                            device=device,
+                            tokenizer=sp,
+                            name="rnn").to(device)
+        trainkit = training_kit(params=model.parameters(),
+                                lr=0.0001,
+                                epochs=30,
+                                weight_decay=0.01,
+                                dataloader=training_loader,
+                                valloader=validation_loader,
+                                batch_size=batch_size)
+    elif args.model == 'lstm':
+        model = LSTM(embed_dim=embed_dim,
                      hidden_size=hidden_size,
                      output_size=output_size,
                      batch_size=batch_size,
                      n_layers=4,
                      device=device,
                      tokenizer=sp,
-                     name="lstm")
+                     name="lstm").to(device)
+        trainkit = training_kit(params=model.parameters(),
+                                lr=0.0001,
+                                epochs=30,
+                                weight_decay=0.01,
+                                dataloader=training_loader,
+                                valloader=validation_loader,
+                                batch_size=batch_size)
 
-    trainkit = training_kit(params=lstmmodel.parameters(),
-                            lr=0.0001,
-                            epochs=30,
-                            weight_decay=0.01,
-                            dataloader=training_loader,
-                            valloader=validation_loader,
-                            batch_size=batch_size)
+    elif args.model == 'transformer':
+        raise Exception('not impl')       
+    else:
+        raise Exception('unknown model type')
 
-    # lstmmodel.reps(trainkit)
-
-    metrics = {
-        'perp': Perplexity(ignore_index=3),
-        'bleu': BLEUScore(n_gram=2)
-    }
-    lstmmodel.eval()
-
-    def evaluate_perplexity(model, perplexity_metric, data_loader, device):
+    if args.mode == 'train':
+        model.reps(trainkit)
+    else:
+        metrics = {
+            'perp': Perplexity(ignore_index=3),
+            'bleu': BLEUScore(n_gram=2)
+        }
         model.eval()
-        # Initialize the Perplexity metric from torcheval.
-        perplexity_metric = Perplexity(ignore_index=3)
-        
-        with torch.no_grad():
-            for inputs, labels in data_loader:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-                # Initialize hidden state for this batch
-                # Forward pass through the model
-                logits, _ = model(inputs, None)
-                perplexity_metric.update(logits, labels)
-                #print(perplexity_metric.compute().item())
-        
-        # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
-        ppl = perplexity_metric.compute().item()
-        return ppl
 
-    lstmmodel.load_state_dict(torch.load('./model_20250327_154622_lstm.torch'))
+        def evaluate_perplexity(model, perplexity_metric, data_loader, device):
+            model.eval()
+            # Initialize the Perplexity metric from torcheval.
+            perplexity_metric = Perplexity(ignore_index=3).to(device)
+            
+            with torch.no_grad():
+                for inputs, labels in data_loader:
+                    inputs = inputs.to(device)
+                    labels = labels.to(device)
+                    # Initialize hidden state for this batch
+                    # Forward pass through the model
+                    logits, _ = model(inputs, None)
+                    perplexity_metric.update(logits, labels)
+                    #print(perplexity_metric.compute().item())
+            
+            # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
+            ppl = perplexity_metric.compute().item()
+            return ppl
 
-    ppl = evaluate_perplexity(lstmmodel, metrics['perp'], test_loader, device)
-    print("perplexity", ppl)
-    print(lstmmodel.prompt('The wizard'))
+        model.load_state_dict(torch.load(args.state))
+    #
+        ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
+        print("perplexity", ppl)
+        print(model.prompt('The wizard'))
     
 

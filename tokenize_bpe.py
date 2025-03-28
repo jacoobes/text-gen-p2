@@ -9,6 +9,7 @@ def train_bpe(response, output: str):
       input=response, 
       model_prefix=output,
       vocab_size=10000,
+      model_type='bpe',
       bos_id=1,
       eos_id=2,
       pad_id=3,
