@@ -79,10 +79,6 @@ def collation(batch):
     target_batch = torch.nn.utils.rnn.pad_sequence(target_batch, batch_first=True, padding_value=3)
     return input_batch, target_batch
 
-def measure(metric: Metric, input, output):
-    metric.update(input, output)
-    return metric.compute()
-
 
 if __name__ == '__main__':
     tokenizer_location = "bptokenizer.model"
@@ -93,7 +89,7 @@ if __name__ == '__main__':
     # Some arbitrary parameters for the example
     hidden_size = 512  # Number of hidden units
     output_size = sp.GetPieceSize() # Output dimension
-    seq_len = 50  # Length of the input sequence
+    seq_len = 25  # Length of the input sequence
     batch_size = 128  # Number of sequences in a batch
     embed_dim = 10
      
@@ -164,7 +160,7 @@ if __name__ == '__main__':
                      name="lstm").to(device)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
-                                epochs=30,
+                                epochs=15,
                                 weight_decay=0.01,
                                 dataloader=training_loader,
                                 valloader=validation_loader,
@@ -179,15 +175,14 @@ if __name__ == '__main__':
         model.reps(trainkit)
     else:
         metrics = {
-            'perp': Perplexity(ignore_index=3),
-            'bleu': BLEUScore(n_gram=2)
+            'perp': Perplexity(ignore_index=3).to(device),
+            'bleu': BLEUScore(n_gram=2).to(device)
         }
         model.eval()
 
         def evaluate_perplexity(model, perplexity_metric, data_loader, device):
             model.eval()
             # Initialize the Perplexity metric from torcheval.
-            perplexity_metric = Perplexity(ignore_index=3).to(device)
             
             with torch.no_grad():
                 for inputs, labels in data_loader:

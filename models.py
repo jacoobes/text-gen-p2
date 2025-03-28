@@ -71,6 +71,7 @@ class RNNModel(nn.Module):
                           num_layers=n_layers,
                           batch_first=True,
                           dropout=dropout)
+        self.softmax = nn.Softmax()
         self.fc = nn.Linear(hidden_size, output_size)
         self.tokenizer=tokenizer
         self.n_layers=n_layers
@@ -187,7 +188,7 @@ class LSTM(nn.Module):
             device,
             name='lstm',
             pad_token_id=0,
-            dropout=0.3):
+            dropout=0.2):
         super(LSTM, self).__init__()
         self.emb = nn.Embedding(output_size, 
                                 embed_dim,
@@ -240,7 +241,7 @@ class LSTM(nn.Module):
         return out, hidden
 
     def reps(self, train_kit):
-        loss_fn = train_kit['loss']
+        loss_fn: nn.CrossEntropyLoss = train_kit['loss']
         optimizer = train_kit['opt']
         training_loader = train_kit['train_loader']
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -260,18 +261,17 @@ class LSTM(nn.Module):
                 labels = labels.to(self.device)
                 # Zero your gradients for every batch!
                 optimizer.zero_grad()
-                # print(labels[0])
                 hidden = tuple([each.data for each in hidden])
                 logits, hidden = self.forward(inputs, hidden)
                 # logits shape should be (batch_size, seqlen, vocabsize)
-                # labels should be (batch_size, expected_token_id)
+                # labels should be (batch_size, expected_seq)
                 #print(logits.shape)
                 #print(labels.shape)
-                loss = loss_fn(logits.view(-1, self.output_size), labels.view(-1))
+                loss = torch.nn.functional.cross_entropy(logits.view(-1, self.output_size), labels.view(-1))
                 #print("loss backward")
                 loss.backward()
                 #print("optimizer")
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 5)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 1)
                 # Adjust learning weights
                 optimizer.step()
 
@@ -316,7 +316,7 @@ class LSTM(nn.Module):
                 torch.save(self.state_dict(), model_path)
                 break
 
-            train_kit['scheduler'].step(best_vloss)
+            train_kit['scheduler'].step(avg_vloss)
 
         model_path = 'model_{}_{}.torch'.format(timestamp, self.name)
         torch.save(self.state_dict(), model_path)
