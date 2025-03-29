@@ -39,8 +39,11 @@ def sampler(top_k:int, logits: torch.Tensor, top_p=0.0, filter_value=-float('Inf
     return pred_token
 
 class Transformer(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, embed_dim):
-        ...
+    def __init__(self, output_size, embed_dim, tokenizer):
+        self.embedding = nn.Embedding(output_size, 
+                                      embed_dim,
+                                      padding_idx=tokenizer.pad_id())
+        self.transformer = nn.Transformer(batch_first=True)
 
     def prompt(self, s: str):
         ...
@@ -58,20 +61,19 @@ class RNNModel(nn.Module):
                 tokenizer,
                 device,
                 name='rnn',
-                pad_token_id=0,
-                dropout=0.2,):
+                dropout=0.5):
         super(RNNModel, self).__init__()
 
+        self.criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id() )
         # vocab size 
         self.emb = nn.Embedding(output_size, 
                                 embed_dim,
-                                padding_idx=pad_token_id)
+                                padding_idx=tokenizer.pad_id())
         self.rnn = nn.RNN(input_size=embed_dim, 
                           hidden_size=hidden_size,
                           num_layers=n_layers,
                           batch_first=True,
                           dropout=dropout)
-        self.softmax = nn.Softmax()
         self.fc = nn.Linear(hidden_size, output_size)
         self.tokenizer=tokenizer
         self.n_layers=n_layers
@@ -86,7 +88,7 @@ class RNNModel(nn.Module):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0)
-        hidden = None
+        hidden = self.init_hidden(input_tensor.size(0))
         output = []
         for _ in range(max_length):
             with torch.no_grad():
@@ -104,7 +106,6 @@ class RNNModel(nn.Module):
         
 
     def forward(self, x, hidden=None):
-
         x = self.emb(x)
         rnn_output, hidden = self.rnn(x, hidden)
         out = self.fc(rnn_output)
@@ -116,66 +117,81 @@ class RNNModel(nn.Module):
         return hidden
 
     def reps(self, train_kit):
-        loss_fn = train_kit['loss']
         optimizer = train_kit['opt']
         training_loader = train_kit['train_loader']
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        EPOCHS = train_kit['epochs']
+        epochs = train_kit['epochs']
+        patience_counter = 0  # Track epochs without improvement
+        patience=5
         best_vloss = 1_000_000.
 
         training_loss, val_loss = [], []
         hidden = self.init_hidden(self.batch_size)
-        for epoch in range(EPOCHS):
+        for epoch in tqdm(range(epochs)):
             # Make sure gradient tracking is on, and do a pass over the data
-            self.train(True)
+            self.train()
             running_loss = 0.
             for inputs, labels in training_loader:
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
                 # Zero your gradients for every batch!
                 optimizer.zero_grad()
-                # print(labels[0])
-                hidden = tuple([each.data for each in hidden])
                 logits, hidden = self.forward(inputs, hidden)
-                logits = torch.sum(logits, dim=1)
-                print(logits.shape, labels.shape)
-                loss = loss_fn(logits.view(-1, self.output_size), labels.view(-1))
+                # logits shape should be (batch_size, seqlen, vocabsize)
+                # labels should be (batch_size, expected_seq)
+                #print(logits.shape)
+                #print(labels.shape)
+                loss = self.criterion(logits.view(-1, self.output_size), labels.view(-1))
                 #print("loss backward")
                 loss.backward()
                 #print("optimizer")
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 3)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 1)
                 # Adjust learning weights
                 optimizer.step()
 
                 # Gather data and report
                 running_loss += loss.item()
-                print(f"EPOCH {epoch} Loss: {loss.item()}")
+                #print(f"EPOCH {epoch+1} Loss: {loss.item()}")
 
             avg_train_loss = running_loss / len(training_loader)
             training_loss.append(avg_train_loss)
 
-            running_vloss = 0.0
             # Set the model to evaluation mode, disabling dropout and using population
             # statistics for batch normalization.
             self.eval()
+            running_vloss = 0.0
+
+            vhidden = self.init_hidden(self.batch_size)
             # Disable gradient computation and reduce memory consumption.
             with torch.no_grad():
                 for vinputs, vlabels  in train_kit['val_loader']: 
-                    voutputs, _ = self.forward(vinputs)
-                    vloss = loss_fn(voutputs.view(-1, self.output_size), vlabels.view(-1))
+                    vinputs, vlabels = vinputs.to(self.device), vlabels.to(self.device)
+                    voutputs, _ = self.forward(vinputs, vhidden)
+                    vloss = self.criterion(voutputs.view(-1, self.output_size), vlabels.view(-1))
                     running_vloss += vloss
-
             avg_vloss = running_vloss / len(train_kit['val_loader'])
             val_loss.append(avg_vloss)
-            print('averages = (loss {} val {})'.format(avg_train_loss, avg_vloss))
+            print('numbers = (avg loss {} avgval {} bestval {})'.format(avg_train_loss, avg_vloss, best_vloss))
 
             # Track best performance, and save the model's state
             if avg_vloss < best_vloss:
+                print('patience reset')
                 best_vloss = avg_vloss
+                patience_counter=0
+            else:
+                print('patience counted increased')
+                patience_counter+=1
 
-            train_kit['scheduler'].step(best_vloss)
+            if patience_counter >= patience:
+                print('not patience anymore. early stopping')
+                break
+
+            train_kit['scheduler'].step(avg_vloss)
 
         model_path = 'model_{}_{}.torch'.format(timestamp, self.name)
         torch.save(self.state_dict(), model_path)
         return training_loss, val_loss
+
 
 class LSTM(nn.Module):
     def __init__(self,                 
@@ -187,17 +203,18 @@ class LSTM(nn.Module):
             tokenizer,
             device,
             name='lstm',
-            pad_token_id=0,
-            dropout=0.2):
+            tie_weights=False,
+            dropout=0.4):
         super(LSTM, self).__init__()
         self.emb = nn.Embedding(output_size, 
                                 embed_dim,
-                                padding_idx=pad_token_id)
+                                padding_idx=tokenizer.pad_id())
         self.lstm= nn.LSTM(input_size=embed_dim, 
                           hidden_size=hidden_size,
                           num_layers=n_layers,
                           batch_first=True,
                           dropout=dropout)
+        self.criterion =  nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id())
         self.tokenizer=tokenizer
         self.fc = nn.Linear(hidden_size, output_size)
         self.n_layers=n_layers
@@ -207,6 +224,17 @@ class LSTM(nn.Module):
         self.device=device
         self.name=name
 
+        # Optionally tie weights as in:
+        # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
+        # https://arxiv.org/abs/1608.05859
+        # and
+        # "Tying Word Vectors and Word Classifiers: A Loss Framework for Language Modeling" (Inan et al. 2016)
+        # https://arxiv.org/abs/1611.01462
+        if tie_weights:
+            if hidden_size != embed_dim:
+                raise ValueError('When using the tied flag, nhid must be equal to emsize')
+            self.fc.weight = self.emb.weight
+
     def init_hidden(self, bsize):
         return (torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device),
                 torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device))
@@ -215,7 +243,7 @@ class LSTM(nn.Module):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
-        hidden = self.init_hidden(1)
+        hidden = self.init_hidden(input_tensor.size(0))
         output = []
 
         with torch.no_grad():
@@ -225,7 +253,7 @@ class LSTM(nn.Module):
                 logits = logits[:,-1, :]
                 #probs = torch.nn.functional.softmax(logits, dim=-1)
                 #next_token_id = torch.multinomial(probs, 1).item()                
-                next_token_id = sampler(20, logits, top_p=0.8)
+                next_token_id = sampler(10, logits, top_p=0.8)
                 output.append(next_token_id.item())
 
                 input_tensor = torch.tensor([[next_token_id]], dtype=torch.long).to(self.device)
@@ -241,7 +269,6 @@ class LSTM(nn.Module):
         return out, hidden
 
     def reps(self, train_kit):
-        loss_fn: nn.CrossEntropyLoss = train_kit['loss']
         optimizer = train_kit['opt']
         training_loader = train_kit['train_loader']
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -267,7 +294,7 @@ class LSTM(nn.Module):
                 # labels should be (batch_size, expected_seq)
                 #print(logits.shape)
                 #print(labels.shape)
-                loss = torch.nn.functional.cross_entropy(logits.view(-1, self.output_size), labels.view(-1))
+                loss = self.criterion(logits.view(-1, self.output_size), labels.view(-1))
                 #print("loss backward")
                 loss.backward()
                 #print("optimizer")
@@ -294,7 +321,7 @@ class LSTM(nn.Module):
                     vinputs, vlabels = vinputs.to(self.device), vlabels.to(self.device)
                     vhidden = tuple([each.data for each in vhidden])
                     voutputs, _ = self.forward(vinputs, vhidden)
-                    vloss = loss_fn(voutputs.view(-1, self.output_size), vlabels.view(-1))
+                    vloss = self.criterion(voutputs.view(-1, self.output_size), vlabels.view(-1))
                     running_vloss += vloss
             avg_vloss = running_vloss / len(train_kit['val_loader'])
             val_loss.append(avg_vloss)
@@ -311,9 +338,6 @@ class LSTM(nn.Module):
 
             if patience_counter >= patience:
                 print('not patience anymore. early stopping')
-                model_path = 'model_{}_{}.torch'.format(timestamp, self.name)
-                print('saving to', model_path)
-                torch.save(self.state_dict(), model_path)
                 break
 
             train_kit['scheduler'].step(avg_vloss)

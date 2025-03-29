@@ -4,16 +4,10 @@ from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
 import sentencepiece as spm
-from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW, lr_scheduler
-from torcheval.metrics.metric import Metric
 from torcheval.metrics.text import Perplexity, BLEUScore
 import json
-from tqdm import tqdm
-from datetime import datetime
-
 from models import LSTM, RNNModel
-
 
 
 
@@ -64,7 +58,6 @@ def training_kit(params, lr, weight_decay, dataloader, valloader, batch_size, ep
     opt = AdamW(params=params, lr=lr,weight_decay=weight_decay)
     return {
         # ignore padding.
-        'loss': CrossEntropyLoss(ignore_index=3),
         'opt': opt,
         'scheduler': lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=3, factor=0.5),
         'epochs' : epochs,
@@ -73,32 +66,36 @@ def training_kit(params, lr, weight_decay, dataloader, valloader, batch_size, ep
         'val_loader': valloader
     }
 
-def collation(batch):
-    input_batch, target_batch = zip(*batch)
-    input_batch = torch.nn.utils.rnn.pad_sequence(input_batch, batch_first=True, padding_value=3)
-    target_batch = torch.nn.utils.rnn.pad_sequence(target_batch, batch_first=True, padding_value=3)
-    return input_batch, target_batch
+def mkcollation(pad_id):
+    def collate(batch):
+        input_batch, target_batch = zip(*batch)
+        input_batch = torch.nn.utils.rnn.pad_sequence(input_batch, batch_first=True, padding_value=pad_id)
+        target_batch = torch.nn.utils.rnn.pad_sequence(target_batch, batch_first=True, padding_value=pad_id)
+        return input_batch, target_batch
+    return collate
 
 
 if __name__ == '__main__':
     tokenizer_location = "bptokenizer.model"
     training_data = read_jsonl('./data/train.jsonl')
     testing_data = read_jsonl('./data/test.jsonl')
-    sp = spm.SentencePieceProcessor(model_file=tokenizer_location)
-
+    sp = spm.SentencePieceProcessor(model_file='./bptokenizer.model')
+    sp.LoadFromFile('./bptokenizer.model')
     # Some arbitrary parameters for the example
     hidden_size = 512  # Number of hidden units
     output_size = sp.GetPieceSize() # Output dimension
-    seq_len = 25  # Length of the input sequence
-    batch_size = 128  # Number of sequences in a batch
-    embed_dim = 10
-     
+    seq_len = 30  # Length of the input sequence
+    batch_size = 256  # Number of sequences in a batch
+    embed_dim = 1024
+    pad_id = sp.pad_id()
+    print('pad_id', pad_id)
+    collate = mkcollation(pad_id) 
     training_loader = DataLoader(
         TokenizedDataset(training_data, sp, seq_len),
         batch_size=batch_size,
         drop_last=True,
         shuffle=True,
-        collate_fn=collation
+        collate_fn=collate
     ) 
     valset, testset = torch.utils.data.random_split(TokenizedDataset(testing_data, sp, seq_len), [.8, .2])
     validation_loader = DataLoader(
@@ -106,14 +103,14 @@ if __name__ == '__main__':
         shuffle=False,
         drop_last=True,
         batch_size=batch_size,
-        collate_fn=collation
+        collate_fn=collate
     )
     test_loader = DataLoader(
         testset,
         shuffle=False,
         drop_last=True,
         batch_size=batch_size,
-        collate_fn=collation
+        collate_fn=collate
     )
     if torch.cuda.is_available():
         print('torch cuda is_available')
@@ -135,13 +132,13 @@ if __name__ == '__main__':
     print(f"Mode: {args.mode}")
     if args.model == 'rnn':
         model = RNNModel(embed_dim=embed_dim,
-                            hidden_size=hidden_size,
-                            output_size=output_size,
-                            batch_size=batch_size,
-                            n_layers=4,
-                            device=device,
-                            tokenizer=sp,
-                            name="rnn").to(device)
+                         hidden_size=hidden_size,
+                         output_size=output_size,
+                         batch_size=batch_size,
+                         n_layers=3,
+                         device=device,
+                         tokenizer=sp,
+                         name="rnn").to(device)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
                                 epochs=30,
@@ -151,16 +148,17 @@ if __name__ == '__main__':
                                 batch_size=batch_size)
     elif args.model == 'lstm':
         model = LSTM(embed_dim=embed_dim,
-                     hidden_size=hidden_size,
+                     hidden_size=embed_dim,
                      output_size=output_size,
                      batch_size=batch_size,
-                     n_layers=4,
+                     n_layers=3,
                      device=device,
                      tokenizer=sp,
+                     tie_weights=True,
                      name="lstm").to(device)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
-                                epochs=15,
+                                epochs=30,
                                 weight_decay=0.01,
                                 dataloader=training_loader,
                                 valloader=validation_loader,
@@ -175,22 +173,20 @@ if __name__ == '__main__':
         model.reps(trainkit)
     else:
         metrics = {
-            'perp': Perplexity(ignore_index=3).to(device),
-            'bleu': BLEUScore(n_gram=2).to(device)
+            'perp': Perplexity(ignore_index=sp.pad_id()).to(device),
+            'bleu': BLEUScore(n_gram=3).to(device)
         }
         model.eval()
 
         def evaluate_perplexity(model, perplexity_metric, data_loader, device):
-            model.eval()
-            # Initialize the Perplexity metric from torcheval.
-            
+            hidden = model.init_hidden(model.batch_size)
             with torch.no_grad():
                 for inputs, labels in data_loader:
                     inputs = inputs.to(device)
                     labels = labels.to(device)
                     # Initialize hidden state for this batch
                     # Forward pass through the model
-                    logits, _ = model(inputs, None)
+                    logits, hidden = model(inputs, hidden)
                     perplexity_metric.update(logits, labels)
                     #print(perplexity_metric.compute().item())
             
@@ -198,10 +194,23 @@ if __name__ == '__main__':
             ppl = perplexity_metric.compute().item()
             return ppl
 
+        def evaluate_bleu(model, bleu_metric, data_loader, device):
+             with torch.no_grad():
+                for inputs, labels in data_loader:
+                    inputs = inputs.to(device)
+                    labels = labels.to(device)
+                    # Initialize hidden state for this batch
+                    # Forward pass through the model
+                    logits, hidden = model(inputs, None)
+                    bleu_metric.update(logits, labels)
+           
+
         model.load_state_dict(torch.load(args.state))
-    #
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
-        print(model.prompt('The wizard'))
+
+        #bleu = evaluate_perplexity(model, metrics['bleu'], test_loader, device) print("bleu", bleu)
+
+        print(model.prompt('Alice'))
     
 
