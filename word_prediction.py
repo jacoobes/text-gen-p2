@@ -3,11 +3,12 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
+from torchview import draw_graph
 import sentencepiece as spm
 from torch.optim import AdamW, lr_scheduler
 from torcheval.metrics.text import Perplexity, BLEUScore
 import json
-from models import LSTM, RNNModel
+from models import LSTM, RNNModel, Transformer
 
 
 
@@ -74,22 +75,37 @@ def mkcollation(pad_id):
         return input_batch, target_batch
     return collate
 
+def evaluate_perplexity(model, perplexity_metric, data_loader, device):
+    hidden = model.init_hidden(model.batch_size)
+    with torch.no_grad():
+        for inputs, labels in data_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            # Initialize hidden state for this batch
+            # Forward pass through the model
+            logits, hidden = model(inputs, hidden)
+            perplexity_metric.update(logits, labels)
+            #print(perplexity_metric.compute().item())
+    
+    # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
+    ppl = perplexity_metric.compute().item()
+    return ppl
+
 
 if __name__ == '__main__':
     tokenizer_location = "bptokenizer.model"
     training_data = read_jsonl('./data/train.jsonl')
     testing_data = read_jsonl('./data/test.jsonl')
     sp = spm.SentencePieceProcessor(model_file='./bptokenizer.model')
-    sp.LoadFromFile('./bptokenizer.model')
     # Some arbitrary parameters for the example
-    hidden_size = 512  # Number of hidden units
-    output_size = sp.GetPieceSize() # Output dimension
     seq_len = 30  # Length of the input sequence
     batch_size = 256  # Number of sequences in a batch
-    embed_dim = 1024
     pad_id = sp.pad_id()
     print('pad_id', pad_id)
     collate = mkcollation(pad_id) 
+
+
+
     training_loader = DataLoader(
         TokenizedDataset(training_data, sp, seq_len),
         batch_size=batch_size,
@@ -118,12 +134,11 @@ if __name__ == '__main__':
     else:
         print('torch cuda not is_available')
         device = torch.device('cpu')           # Use CPU
-#    device = torch.device('cpu')
 
     import argparse
     parser = argparse.ArgumentParser(description="CLI for word prediction model.")
     parser.add_argument("model", choices=["rnn", "transformer", "lstm"], help="Model type to use.")
-    parser.add_argument("mode", choices=["train", "test"], help="Operation mode.")
+    parser.add_argument("mode", choices=["train", "test", 'draw'], help="Operation mode.")
     parser.add_argument("--state", type=str)
     
     args = parser.parse_args()
@@ -131,6 +146,12 @@ if __name__ == '__main__':
     print(f"Selected model: {args.model}")
     print(f"Mode: {args.mode}")
     if args.model == 'rnn':
+        hidden_size = 128  # Number of hidden units
+        output_size = sp.GetPieceSize() # Output dimension
+        seq_len = 30  # Length of the input sequence
+        batch_size = 256  # Number of sequences in a batch
+        embed_dim = 1024
+
         model = RNNModel(embed_dim=embed_dim,
                          hidden_size=hidden_size,
                          output_size=output_size,
@@ -146,7 +167,22 @@ if __name__ == '__main__':
                                 dataloader=training_loader,
                                 valloader=validation_loader,
                                 batch_size=batch_size)
+        def mg():
+            return draw_graph(model, input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=400),
+                                                 model.init_hidden(model.batch_size)),
+                                     graph_name=args.model,
+                                     roll=True,
+                                     save_graph=True,
+                                     device='meta'
+                                ),
+
     elif args.model == 'lstm':
+        hidden_size = 512  # Number of hidden units
+        output_size = sp.GetPieceSize() # Output dimension
+        seq_len = 30  # Length of the input sequence
+        batch_size = 256  # Number of sequences in a batch
+        embed_dim = 1024
+
         model = LSTM(embed_dim=embed_dim,
                      hidden_size=embed_dim,
                      output_size=output_size,
@@ -163,54 +199,66 @@ if __name__ == '__main__':
                                 dataloader=training_loader,
                                 valloader=validation_loader,
                                 batch_size=batch_size)
+        def mg():
+            return draw_graph(model, 
+                             graph_name=args.model,
+                             device='meta',
+                             input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=400),
+                                         model.init_hidden(model.batch_size)),
+                             roll=True,
+                             save_graph=True)
+
 
     elif args.model == 'transformer':
-        raise Exception('not impl')       
+        embed_dim=1024
+        output_size=sp.GetPieceSize()
+        feedforward_size=512
+        batch_size=64
+        seq_len = 30  # Length of the input sequence
+        model = Transformer(
+                    feedforward_size=feedforward_size,
+                     embed_dim=embed_dim,
+                     output_size=output_size,
+                     batch_size=batch_size,
+                     sequence_length=seq_len,
+                     device=device,
+                     tokenizer=sp,
+                     name="transformer"
+                ).to(device)
+        def mg():
+            print('not implemented')
+            return None
+
+        trainkit = training_kit(params=model.parameters(),
+                                 lr=0.0001,
+                                 epochs=30,
+                                 weight_decay=0.01,
+                                 dataloader=training_loader,
+                                 valloader=validation_loader,
+                                 batch_size=batch_size)
+
     else:
         raise Exception('unknown model type')
 
     if args.mode == 'train':
         model.reps(trainkit)
-    else:
+    elif args.mode == 'test':
         metrics = {
             'perp': Perplexity(ignore_index=sp.pad_id()).to(device),
             'bleu': BLEUScore(n_gram=3).to(device)
         }
         model.eval()
 
-        def evaluate_perplexity(model, perplexity_metric, data_loader, device):
-            hidden = model.init_hidden(model.batch_size)
-            with torch.no_grad():
-                for inputs, labels in data_loader:
-                    inputs = inputs.to(device)
-                    labels = labels.to(device)
-                    # Initialize hidden state for this batch
-                    # Forward pass through the model
-                    logits, hidden = model(inputs, hidden)
-                    perplexity_metric.update(logits, labels)
-                    #print(perplexity_metric.compute().item())
-            
-            # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
-            ppl = perplexity_metric.compute().item()
-            return ppl
 
-        def evaluate_bleu(model, bleu_metric, data_loader, device):
-             with torch.no_grad():
-                for inputs, labels in data_loader:
-                    inputs = inputs.to(device)
-                    labels = labels.to(device)
-                    # Initialize hidden state for this batch
-                    # Forward pass through the model
-                    logits, hidden = model(inputs, None)
-                    bleu_metric.update(logits, labels)
-           
 
         model.load_state_dict(torch.load(args.state))
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
 
-        #bleu = evaluate_perplexity(model, metrics['bleu'], test_loader, device) print("bleu", bleu)
+#        bleu = evaluate_perplexity(model, metrics['bleu'], test_loader, device) 
+#        print("bleu", bleu)
 
         print(model.prompt('Alice'))
-    
-
+    else:
+        cg = mg()
+        print(cg)
