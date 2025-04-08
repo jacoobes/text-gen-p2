@@ -8,7 +8,7 @@ import sentencepiece as spm
 from torch.optim import AdamW, lr_scheduler
 from torcheval.metrics.text import Perplexity, BLEUScore 
 import json
-from models import LSTM, RNNModel, Transformer
+from models import LSTM, RNNModel, TransformerModel
 
 
 
@@ -76,14 +76,21 @@ def mkcollation(pad_id):
     return collate
 
 def evaluate_perplexity(model, perplexity_metric, data_loader, device):
-    hidden = model.init_hidden(model.batch_size)
+    if isinstance(model, TransformerModel):
+        hidden = None
+    else:
+        hidden = model.init_hidden(model.batch_size)
     with torch.no_grad():
         for inputs, labels in data_loader:
             inputs = inputs.to(device)
             labels = labels.to(device)
             # Initialize hidden state for this batch
             # Forward pass through the model
-            logits, hidden = model(inputs, hidden)
+            if not isinstance(model, TransformerModel):
+                logits, hidden = model(inputs, hidden)
+            else:
+                logits = model(inputs, labels)
+
             perplexity_metric.update(logits, labels)
             #print(perplexity_metric.compute().item())
     
@@ -210,12 +217,12 @@ if __name__ == '__main__':
 
 
     elif args.model == 'transformer':
-        embed_dim=128
+        embed_dim=256
         output_size=sp.GetPieceSize()
-        feedforward_size=512
+        feedforward_size=1024
         batch_size=64
         seq_len = 30  # Length of the input sequence
-        model = Transformer(
+        model = TransformerModel(
                     feedforward_size=feedforward_size,
                      embed_dim=embed_dim,
                      output_size=output_size,

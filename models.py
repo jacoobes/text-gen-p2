@@ -86,7 +86,7 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0), :]
         return self.dropout(x)
 
-class Transformer(nn.Module):
+class TransformerModel(nn.Module):
     def __init__(self, 
         output_size,
         batch_size,
@@ -97,7 +97,7 @@ class Transformer(nn.Module):
         device,
         max_seq_len=50,
         name='transformer'):
-        super(Transformer, self).__init__()
+        super(TransformerModel, self).__init__()
         self.max_seq_len = max_seq_len
         self.batch_size=batch_size
         self.seqlen = sequence_length
@@ -106,7 +106,7 @@ class Transformer(nn.Module):
                                       padding_idx=tokenizer.pad_id())
 
         self.transformer = nn.Transformer(d_model=embed_dim, # embedding dimension
-                                         nhead=2, # num of attention heads
+                                         nhead=8, # num of attention heads
                                          dim_feedforward=feedforward_size,
                                          batch_first=True)
         self.posenc = PositionalEncoding(d_model=embed_dim)
@@ -116,6 +116,7 @@ class Transformer(nn.Module):
         self.output_size=output_size
         self.device=device
         self.name=name
+        self.tokenizer=tokenizer
 
     def reps(self, train_kit):
         optimizer = train_kit['opt']
@@ -144,7 +145,7 @@ class Transformer(nn.Module):
                 #print("loss backward")
                 loss.backward()
                 #print("optimizer")
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 1)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 3)
                 # Adjust learning weights
                 optimizer.step()
 
@@ -193,10 +194,36 @@ class Transformer(nn.Module):
 
         return training_loss, val_loss
 
-    def prompt(self, s: str):
-        ...
+    def prompt(self, text: str, max_length = 50, argm=True):
+        self.eval()
+        # encode, turn to tensor, and turn dimensions into batchable dimensions
+        input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
+        output = []
 
-    def forward(self, input, targt):
+        with torch.no_grad():
+            for _ in range(max_length):
+                logits = self.forward(input_tensor)
+                # dim = (batchsize, token seq len, vocab size)
+                logits = logits[:,-1, :]
+                #probs = torch.nn.functional.softmax(logits, dim=-1)
+                #next_token_id = torch.multinomial(probs, 1).item()                
+                if not argm: 
+                    next_token_id = sampler(10, logits, top_p=0.8)
+                else:
+                    next_token_id = torch.argmax(logits ,dim=-1)
+
+                if self.tokenizer.eos_id() == next_token_id:
+                    print('early stopping')
+                    break
+
+                output.append(next_token_id.item())
+
+                input_tensor = torch.tensor([[next_token_id]], dtype=torch.long).to(self.device)
+
+                
+        return self.tokenizer.decode(output, out_type=str)
+
+    def forward(self, input, targt=None):
         # embed input
         x = self.posenc.forward(self.embedding(input))
         tgt = self.posenc.forward(self.embedding(targt))
