@@ -6,7 +6,7 @@ import numpy as np
 from torchview import draw_graph
 import sentencepiece as spm
 from torch.optim import AdamW, lr_scheduler
-from torcheval.metrics.text import Perplexity, BLEUScore
+from torcheval.metrics.text import Perplexity, BLEUScore 
 import json
 from models import LSTM, RNNModel, Transformer
 
@@ -210,7 +210,7 @@ if __name__ == '__main__':
 
 
     elif args.model == 'transformer':
-        embed_dim=1024
+        embed_dim=128
         output_size=sp.GetPieceSize()
         feedforward_size=512
         batch_size=64
@@ -226,9 +226,12 @@ if __name__ == '__main__':
                      name="transformer"
                 ).to(device)
         def mg():
-            print('not implemented')
-            return None
-
+            return draw_graph(model, 
+                                 graph_name=args.model,
+                                 device='meta',
+                                 input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
+                                 roll=True,
+                                 save_graph=True)
         trainkit = training_kit(params=model.parameters(),
                                  lr=0.0001,
                                  epochs=30,

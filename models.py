@@ -95,8 +95,10 @@ class Transformer(nn.Module):
         embed_dim,
         tokenizer,
         device,
+        max_seq_len=50,
         name='transformer'):
         super(Transformer, self).__init__()
+        self.max_seq_len = max_seq_len
         self.batch_size=batch_size
         self.seqlen = sequence_length
         self.embedding = nn.Embedding(output_size, 
@@ -104,31 +106,102 @@ class Transformer(nn.Module):
                                       padding_idx=tokenizer.pad_id())
 
         self.transformer = nn.Transformer(d_model=embed_dim, # embedding dimension
-                                         nhead=8, # num of attention heads
+                                         nhead=2, # num of attention heads
                                          dim_feedforward=feedforward_size,
                                          batch_first=True)
         self.posenc = PositionalEncoding(d_model=embed_dim)
         self.criterion  = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id())
-        self.fc = nn.Linear(feedforward_size, output_size)
-        self.logsoft = nn.LogSoftmax()
+        self.fc = nn.Linear(embed_dim, output_size)
+        self.logsoft = nn.LogSoftmax(dim=-1)
+        self.output_size=output_size
         self.device=device
+        self.name=name
 
-    def reps(self, trainkit):
-        print(self.seqlen)
-        print(self.batch_size)
-        b = torch.randint(low=5, high=20,size=(self.batch_size, self.seqlen)).to(self.device)
-        t = torch.randint(low=5, high=20,size=(self.batch_size, self.seqlen)).to(self.device)
-        print(self.forward(b, t))
-        ...
+    def reps(self, train_kit):
+        optimizer = train_kit['opt']
+        training_loader = train_kit['train_loader']
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        epochs = train_kit['epochs']
+        patience_counter = 0  # Track epochs without improvement
+        patience=5
+        best_vloss = 1_000_000.
+        training_loss, val_loss = [], []
+        for epoch in tqdm(range(epochs)):
+            # Make sure gradient tracking is on, and do a pass over the data
+            self.train()
+            running_loss = 0.
+            for inputs, labels in training_loader:
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
+                # Zero your gradients for every batch!
+                optimizer.zero_grad()
+                logits= self.forward(inputs, labels)
+                # logits shape should be (batch_size, seqlen, vocabsize)
+                # labels should be (batch_size, expected_seq)
+                #print(logits.shape)
+                #print(labels.shape)
+                loss = self.criterion(logits.view(-1, self.output_size), labels.view(-1))
+                #print("loss backward")
+                loss.backward()
+                #print("optimizer")
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 1)
+                # Adjust learning weights
+                optimizer.step()
+
+                # Gather data and report
+                running_loss += loss.item()
+                #print(f"EPOCH {epoch+1} Loss: {loss.item()}")
+
+            avg_train_loss = running_loss / len(training_loader)
+            training_loss.append(avg_train_loss)
+
+            # Set the model to evaluation mode, disabling dropout and using population
+            # statistics for batch normalization.
+            self.eval()
+            running_vloss = 0.0
+
+            # Disable gradient computation and reduce memory consumption.
+            with torch.no_grad():
+                for vinputs, vlabels  in train_kit['val_loader']: 
+                    vinputs, vlabels = vinputs.to(self.device), vlabels.to(self.device)
+                    voutputs = self.forward(vinputs, vlabels)
+                    vloss = self.criterion(voutputs.view(-1, self.output_size), vlabels.view(-1))
+                    running_vloss += vloss.item()
+            avg_vloss = running_vloss / len(train_kit['val_loader'])
+            val_loss.append(avg_vloss)
+            print('numbers = (avg loss {} avgval {} bestval {})'.format(avg_train_loss, avg_vloss, best_vloss))
+
+            # Track best performance, and save the model's state
+            if avg_vloss < best_vloss:
+                print('patience reset')
+                best_vloss = avg_vloss
+                patience_counter=0
+            else:
+                print('patience counted increased')
+                patience_counter+=1
+
+            if patience_counter >= patience:
+                print('not patience anymore. early stopping')
+                break
+
+            train_kit['scheduler'].step(avg_vloss)
+
+        model_path = 'model_{}_{}.torch'.format(timestamp, self.name)
+        torch.save(self.state_dict(), model_path)
+        with open('./model_{}_{}_{}.json'.format(timestamp, self.name, 'tvl'), 'w+') as f:
+            json.dump([training_loss,val_loss], f)
+
+        return training_loss, val_loss
 
     def prompt(self, s: str):
         ...
 
     def forward(self, input, targt):
         # embed input
-        x = self.embedding(input) + self.posenc.forward(input)
+        x = self.posenc.forward(self.embedding(input))
+        tgt = self.posenc.forward(self.embedding(targt))
         # encoder
-        x = self.transformer.forward(x, targt)
+        x = self.transformer.forward(x, tgt)
         # decode
         x = self.fc(x)
         # activate
