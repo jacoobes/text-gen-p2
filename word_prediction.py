@@ -20,7 +20,32 @@ def add_special_token(prompt, completion):
     if completion.endswith('.') or completion.endswith('?') or completion.endswith('!'):
         completion += '<eos>'
     return  prompt, completion
- 
+class PromptCompletionDataset(Dataset):
+    def __init__(self, jsonl_file, tokenizer, seq_length):
+        self.data = []
+        self.seq_length = seq_length
+
+        # Load and pad sequences
+        for line in jsonl_file:
+            prompt  = line["prompt"]
+            completion = line['completion']
+            text = (prompt + ' ' + completion)[:seq_length]
+            token_ids = tokenizer.encode(text, out_type=int)[:seq_length]
+            if len(text) < 2:
+                continue
+            self.data.append(tokenizer.decode(token_ids))
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        tids = self.data[idx]
+        #print(self.data[idx][0], self.data[idx][1])
+        inp = tids[:-1]
+        target = tids[1:]
+        return inp, target
+
+   
 
 class TokenizedDataset(Dataset):
     def __init__(self, jsonl_file, tokenizer, seq_length):
@@ -97,6 +122,21 @@ def evaluate_perplexity(model, perplexity_metric, data_loader, device):
     # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
     ppl = perplexity_metric.compute().item()
     return ppl
+
+def evaluate_bleu(model, bleu_metric, data_loader, device):
+
+    with torch.no_grad():
+        for inputs, labels in data_loader:
+            # Initialize hidden state for this batch
+            # Forward pass through the model
+            v = model.prompt(inputs[0], argm=False)
+
+            bleu_metric.update(v, labels[0])
+            #print(perplexity_metric.compute().item())
+    
+    # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
+    bl = bleu_metric.compute().item()
+    return bl 
 
 
 if __name__ == '__main__':
@@ -179,6 +219,7 @@ if __name__ == '__main__':
                                                  model.init_hidden(model.batch_size)),
                                      graph_name=args.model,
                                      roll=True,
+                                     filename="./good/"+args.model,
                                      save_graph=True,
                                      device='meta'
                                 ),
@@ -213,6 +254,7 @@ if __name__ == '__main__':
                              input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=400),
                                          model.init_hidden(model.batch_size)),
                              roll=True,
+                             filename="./good/"+args.model,
                              save_graph=True)
 
 
@@ -220,32 +262,35 @@ if __name__ == '__main__':
         embed_dim=256
         output_size=sp.GetPieceSize()
         feedforward_size=1024
-        batch_size=64
-        seq_len = 30  # Length of the input sequence
+        batch_size=256
+        seq_len = 50  # Length of the input sequence
         model = TransformerModel(
                     feedforward_size=feedforward_size,
-                     embed_dim=embed_dim,
-                     output_size=output_size,
-                     batch_size=batch_size,
-                     sequence_length=seq_len,
-                     device=device,
-                     tokenizer=sp,
-                     name="transformer"
+                    embed_dim=embed_dim,
+                    output_size=output_size,
+                    batch_size=batch_size,
+                    sequence_length=seq_len,
+                    device=device,
+                    tokenizer=sp,
+                    name="transformer"
                 ).to(device)
         def mg():
             return draw_graph(model, 
                                  graph_name=args.model,
                                  device='meta',
-                                 input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
-                                 roll=True,
+                                 input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000),
+                                             torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
+                                 roll=False,
+                                 depth=1,
+                                 filename="./good/"+args.model,
                                  save_graph=True)
         trainkit = training_kit(params=model.parameters(),
-                                 lr=0.0001,
-                                 epochs=30,
-                                 weight_decay=0.01,
-                                 dataloader=training_loader,
-                                 valloader=validation_loader,
-                                 batch_size=batch_size)
+                                lr=0.0001,
+                                epochs=30,
+                                weight_decay=0.01,
+                                dataloader=training_loader,
+                                valloader=validation_loader,
+                                batch_size=batch_size)
 
     else:
         raise Exception('unknown model type')
@@ -265,8 +310,8 @@ if __name__ == '__main__':
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
 
-#        bleu = evaluate_perplexity(model, metrics['bleu'], test_loader, device) 
-#        print("bleu", bleu)
+        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len)) , device) 
+        print("bleu", bleu)
 
         print(model.prompt('Alice'))
     else:

@@ -136,7 +136,7 @@ class TransformerModel(nn.Module):
                 labels = labels.to(self.device)
                 # Zero your gradients for every batch!
                 optimizer.zero_grad()
-                logits= self.forward(inputs, labels)
+                logits= self.forward(inputs)
                 # logits shape should be (batch_size, seqlen, vocabsize)
                 # labels should be (batch_size, expected_seq)
                 #print(logits.shape)
@@ -194,7 +194,7 @@ class TransformerModel(nn.Module):
 
         return training_loss, val_loss
 
-    def prompt(self, text: str, max_length = 50, argm=True):
+    def prompt(self, text: str, max_length = 50, argm=False):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
@@ -212,13 +212,13 @@ class TransformerModel(nn.Module):
                 else:
                     next_token_id = torch.argmax(logits ,dim=-1)
 
-                if self.tokenizer.eos_id() == next_token_id:
+                if self.tokenizer.eos_id() == next_token_id.item():
                     print('early stopping')
                     break
 
                 output.append(next_token_id.item())
 
-                input_tensor = torch.tensor([[next_token_id]], dtype=torch.long).to(self.device)
+                input_tensor = torch.cat((input_tensor, torch.tensor([[next_token_id]]).to(self.device)), dim=1).to(self.device) 
 
                 
         return self.tokenizer.decode(output, out_type=str)
@@ -226,9 +226,6 @@ class TransformerModel(nn.Module):
     def forward(self, input, targt=None):
         # embed input
         x = self.posenc.forward(self.embedding(input))
-        tgt = self.posenc.forward(self.embedding(targt))
-        # encoder
-        x = self.transformer.forward(x, tgt)
         # decode
         x = self.fc(x)
         # activate
