@@ -232,13 +232,12 @@ if __name__ == '__main__':
         embed_dim = 1024
 
         model = LSTM(embed_dim=embed_dim,
-                     hidden_size=embed_dim,
+                     hidden_size=hidden_size,
                      output_size=output_size,
                      batch_size=batch_size,
-                     n_layers=3,
+                     n_layers=4,
                      device=device,
                      tokenizer=sp,
-                     tie_weights=True,
                      name="lstm").to(device)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
@@ -259,7 +258,7 @@ if __name__ == '__main__':
 
 
     elif args.model == 'transformer':
-        embed_dim=256
+        embed_dim=320
         output_size=sp.GetPieceSize()
         feedforward_size=1024
         batch_size=256
@@ -278,15 +277,13 @@ if __name__ == '__main__':
             return draw_graph(model, 
                                  graph_name=args.model,
                                  device='meta',
-                                 input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000),
-                                             torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
-                                 roll=False,
-                                 depth=1,
+                                 input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
+                                 roll=True,
                                  filename="./good/"+args.model,
                                  save_graph=True)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
-                                epochs=30,
+                                epochs=75,
                                 weight_decay=0.01,
                                 dataloader=training_loader,
                                 valloader=validation_loader,
@@ -310,10 +307,10 @@ if __name__ == '__main__':
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
 
-        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len)) , device) 
-        print("bleu", bleu)
+#        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len)) , device) 
+#        print("bleu", bleu)
 
-        print(model.prompt('Alice'))
+        print(model.prompt('Who is Alice?'))
     else:
         cg = mg()
         print(cg)
