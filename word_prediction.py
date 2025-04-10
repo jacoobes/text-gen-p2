@@ -20,6 +20,7 @@ def add_special_token(prompt, completion):
     if completion.endswith('.') or completion.endswith('?') or completion.endswith('!'):
         completion += '<eos>'
     return  prompt, completion
+
 class PromptCompletionDataset(Dataset):
     def __init__(self, jsonl_file, tokenizer, seq_length):
         self.data = []
@@ -33,7 +34,7 @@ class PromptCompletionDataset(Dataset):
             token_ids = tokenizer.encode(text, out_type=int)[:seq_length]
             if len(text) < 2:
                 continue
-            self.data.append(tokenizer.decode(token_ids))
+            self.data.append(tokenizer.decode(token_ids, out_type=str))
 
     def __len__(self):
         return len(self.data)
@@ -123,21 +124,19 @@ def evaluate_perplexity(model, perplexity_metric, data_loader, device):
     ppl = perplexity_metric.compute().item()
     return ppl
 
-def evaluate_bleu(model, bleu_metric, data_loader, device):
 
+def evaluate_bleu(model, bleu_metric, data_loader):
+    model.eval()
     with torch.no_grad():
         for inputs, labels in data_loader:
-            # Initialize hidden state for this batch
-            # Forward pass through the model
-            v = model.prompt(inputs[0], argm=False)
+            inputs = inputs[0]
+            labels = labels[0]
 
-            bleu_metric.update(v, labels[0])
-            #print(perplexity_metric.compute().item())
+            prediction = model.prompt(inputs, argm=False)
+            bleu_metric.update([prediction], [[labels]])
     
-    # Compute perplexity: torcheval.Perplexity returns exp(avg_loss)
-    bl = bleu_metric.compute().item()
-    return bl 
-
+    bleu_score = bleu_metric.compute().item()
+    return bleu_score
 
 if __name__ == '__main__':
     tokenizer_location = "bptokenizer.model"
@@ -297,7 +296,7 @@ if __name__ == '__main__':
     elif args.mode == 'test':
         metrics = {
             'perp': Perplexity(ignore_index=sp.pad_id()).to(device),
-            'bleu': BLEUScore(n_gram=3).to(device)
+            'bleu': BLEUScore(n_gram=2).to(device)
         }
         model.eval()
 
@@ -307,7 +306,7 @@ if __name__ == '__main__':
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
 
-#        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len)) , device) 
+#        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len), batch_size=1)) 
 #        print("bleu", bleu)
 
         print(model.prompt('Who is Alice?'))

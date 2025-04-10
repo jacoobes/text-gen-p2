@@ -194,14 +194,14 @@ class TransformerModel(nn.Module):
 
         return training_loss, val_loss
 
-    def prompt(self, text: str, max_length = 50, argm=False):
+    def prompt(self, text: str, max_seq_length = 50, argm=False):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
         output = []
 
         with torch.no_grad():
-            for _ in range(max_length):
+            for _ in range(max_seq_length):
                 logits = self.forward(input_tensor)
                 # dim = (batchsize, token seq len, vocab size)
                 logits = logits[:,-1, :]
@@ -265,7 +265,7 @@ class RNNModel(nn.Module):
         self.name=name
         
 
-    def prompt(self, text: str, max_length = 50, argm=True):
+    def prompt(self, text: str, max_seq_length = 50, argm=True):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
@@ -273,7 +273,7 @@ class RNNModel(nn.Module):
         output = []
 
         with torch.no_grad():
-            for _ in range(max_length):
+            for _ in range(max_seq_length):
                 logits, hidden = self.forward(input_tensor, hidden)
                 # dim = (batchsize, token seq len, vocab size)
                 logits = logits[:,-1, :]
@@ -437,7 +437,7 @@ class LSTM(nn.Module):
         return (torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device),
                 torch.zeros(self.n_layers, bsize, self.hidden_size).to(self.device))
 
-    def prompt(self, text: str, max_length=50, argm=False):
+    def prompt(self, text: str, max_seq_length=50, argm=False):
         self.eval()
         # encode, turn to tensor, and turn dimensions into batchable dimensions
         input_tensor = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).unsqueeze(0).to(self.device)
@@ -445,7 +445,7 @@ class LSTM(nn.Module):
         output = []
 
         with torch.no_grad():
-            for _ in range(max_length):
+            for _ in range(max_seq_length):
                 logits, hidden = self.forward(input_tensor, hidden)
                 # dim = (batchsize, token seq len, vocab size)
                 logits = logits[:,-1, :]
