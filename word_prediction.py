@@ -132,7 +132,9 @@ def evaluate_bleu(model, bleu_metric, data_loader):
             inputs = inputs[0]
             labels = labels[0]
 
-            prediction = model.prompt(inputs, argm=False)
+            prediction = model.prompt(inputs, argm=False, max_seq_length=10)
+            if len(prediction.split()) < bleu_metric.n_gram:
+                continue
             bleu_metric.update([prediction], [[labels]])
     
     bleu_score = bleu_metric.compute().item()
@@ -174,23 +176,27 @@ if __name__ == '__main__':
         batch_size=batch_size,
         collate_fn=collate
     )
-    if torch.cuda.is_available():
-        print('torch cuda is_available')
-        device = torch.device('cuda')          # Use GPU
-    else:
-        print('torch cuda not is_available')
-        device = torch.device('cpu')           # Use CPU
 
     import argparse
     parser = argparse.ArgumentParser(description="CLI for word prediction model.")
     parser.add_argument("model", choices=["rnn", "transformer", "lstm"], help="Model type to use.")
     parser.add_argument("mode", choices=["train", "test", 'draw'], help="Operation mode.")
     parser.add_argument("--state", type=str)
+    parser.add_argument("--device", type=str)
     
     args = parser.parse_args()
     
     print(f"Selected model: {args.model}")
     print(f"Mode: {args.mode}")
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
+        print('torch cuda is_available')
+        device = torch.device('cuda')          # Use GPU
+    else:
+        print('torch cuda not is_available')
+        device = torch.device('cpu')           # Use CPU
+    
     if args.model == 'rnn':
         hidden_size = 128  # Number of hidden units
         output_size = sp.GetPieceSize() # Output dimension
@@ -306,8 +312,8 @@ if __name__ == '__main__':
         ppl = evaluate_perplexity(model, metrics['perp'], test_loader, device)
         print("perplexity", ppl)
 
-#        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len), batch_size=1)) 
-#        print("bleu", bleu)
+        bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len), batch_size=1)) 
+        print("bleu", bleu)
 
         print(model.prompt('Who is Alice?'))
     else:
