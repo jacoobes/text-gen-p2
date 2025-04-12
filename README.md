@@ -54,7 +54,9 @@ python ./word_prediction.py (MODEL) train [--device DEVICE]
 python ./word_prediction.py (MODEL) test --state (MODELPATH) --device (DEVICE)
 ``` 
 
-** training only works on device = CPU **
+**training only works on device = CPU**
+
+
 
 - Replace (MODEL) with either `rnn`,`lstm`, or `transformer`
 - (MODELPATH) is the trained model
