@@ -225,7 +225,7 @@ if __name__ == '__main__':
                                                  model.init_hidden(model.batch_size)),
                                      graph_name=args.model,
                                      roll=True,
-                                     filename="./good/"+args.model,
+                                     filename=args.model,
                                      save_graph=True,
                                      device='meta'
                                 ),
@@ -259,7 +259,7 @@ if __name__ == '__main__':
                              input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=400),
                                          model.init_hidden(model.batch_size)),
                              roll=True,
-                             filename="./good/"+args.model,
+                             filename=args.model,
                              save_graph=True)
 
 
@@ -285,7 +285,7 @@ if __name__ == '__main__':
                                  device='meta',
                                  input_data=(torch.randint(size=(batch_size, seq_len), low=0, high=10000)),
                                  roll=True,
-                                 filename="./good/"+args.model,
+                                 filename=args.model,
                                  save_graph=True)
         trainkit = training_kit(params=model.parameters(),
                                 lr=0.0001,
