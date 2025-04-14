@@ -131,6 +131,7 @@ def evaluate_bleu(model, bleu_metric, data_loader):
         for inputs, labels in data_loader:
             inputs = inputs[0]
             labels = labels[0]
+            #print (inputs, labels)
 
             prediction = model.prompt(inputs, argm=False, max_seq_length=10)
             if len(prediction.split()) < bleu_metric.n_gram:
@@ -302,7 +303,7 @@ if __name__ == '__main__':
     elif args.mode == 'test':
         metrics = {
             'perp': Perplexity(ignore_index=sp.pad_id()).to(device),
-            'bleu': BLEUScore(n_gram=2).to(device)
+            'bleu': BLEUScore(n_gram=2, device=torch.device('cpu'))
         }
         model.eval()
 
@@ -315,6 +316,7 @@ if __name__ == '__main__':
         bleu = evaluate_bleu(model, metrics['bleu'], DataLoader(PromptCompletionDataset(testing_data, sp, seq_len), batch_size=1)) 
         print("bleu", bleu)
 
+        print(model.prompt('Which do you prefer? Dogs or cats?'))
         print(model.prompt('Who is Alice?'))
     else:
         cg = mg()
